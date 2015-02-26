@@ -708,7 +708,8 @@ def getPhases(debug):
             self.startTagHandler = utils.MethodDispatcher([
                 ("html", self.startTagHtml),
                 ("title", self.startTagTitle),
-                (("noscript", "noframes", "style"), self.startTagNoScriptNoFramesStyle),
+                ("noscript", self.startTagNoScript),
+                (("noframes", "style"), self.startTagNoScriptNoFramesStyle),
                 ("script", self.startTagScript),
                 (("base", "basefont", "bgsound", "command", "link"),
                  self.startTagBaseLinkCommand),
@@ -777,6 +778,11 @@ def getPhases(debug):
             self.parser.originalPhase = self.parser.phase
             self.parser.phase = self.parser.phases["text"]
 
+        def startTagNoScript(self, token):
+            self.tree.insertElement(token)
+            self.parser.originalPhase = self.parser.phase
+            self.parser.phase = self.parser.phases["inHeadNoscript"]
+
         def startTagOther(self, token):
             self.anythingElse()
             return token
@@ -799,7 +805,68 @@ def getPhases(debug):
     # XXX If we implement a parser for which scripting is disabled we need to
     # implement this phase.
     #
-    # class InHeadNoScriptPhase(Phase):
+    class InHeadNoScriptPhase(Phase):
+        def __init__(self, parser, tree):
+            Phase.__init__(self, parser, tree)
+
+            self.startTagHandler = utils.MethodDispatcher([
+                ("meta", self.startTagMeta),
+                ("style", self.startTagStyle),
+                ("link", self.startTagLink),
+            ])
+            self.startTagHandler.default = self.startTagOther
+
+            self.endTagHandler = utils.MethodDispatcher([
+                ("noscript", self.endTagNoScript),
+            ])
+            self.endTagHandler.default = self.endTagOther
+
+        def startTagMeta(self, token):
+            self.tree.insertElement(token)
+            self.tree.openElements.pop()
+            token["selfClosingAcknowledged"] = True
+
+            attributes = token["data"]
+            if self.parser.tokenizer.stream.charEncoding[1] == "tentative":
+                if "charset" in attributes:
+                    self.parser.tokenizer.stream.changeEncoding(attributes["charset"])
+                elif ("content" in attributes and
+                              "http-equiv" in attributes and
+                              attributes["http-equiv"].lower() == "content-type"):
+                    # Encoding it as UTF-8 here is a hack, as really we should pass
+                    # the abstract Unicode string, and just use the
+                    # ContentAttrParser on that, but using UTF-8 allows all chars
+                    # to be encoded and as a ASCII-superset works.
+                    data = inputstream.EncodingBytes(attributes["content"].encode("utf-8"))
+                    parser = inputstream.ContentAttrParser(data)
+                    codec = parser.parse()
+                    self.parser.tokenizer.stream.changeEncoding(codec)
+
+        def startTagStyle(self, token):
+            self.parser.parseRCDataRawtext(token, "RAWTEXT")
+
+        def startTagLink(self, token):
+            self.tree.insertElement(token)
+            self.tree.openElements.pop()
+            token["selfClosingAcknowledged"] = True
+
+        def startTagOther(self, token):
+            import pdb; pdb.set_trace()
+            self.anythingElse()
+            return token
+
+        def endTagNoScript(self, token):
+            node = self.tree.openElements.pop()
+            assert node.name == "noscript"
+            self.parser.phase = self.parser.originalPhase
+
+        def endTagOther(self, token):
+            self.parser.parseError("unexpected-end-tag", {"name": token["name"]})
+
+        def anythingElse(self):
+            self.endTagNoScript(impliedTagToken("noscript"))
+
+
     class AfterHeadPhase(Phase):
         def __init__(self, parser, tree):
             Phase.__init__(self, parser, tree)
@@ -2687,7 +2754,7 @@ def getPhases(debug):
         "beforeHtml": BeforeHtmlPhase,
         "beforeHead": BeforeHeadPhase,
         "inHead": InHeadPhase,
-        # XXX "inHeadNoscript": InHeadNoScriptPhase,
+        "inHeadNoscript": InHeadNoScriptPhase,
         "afterHead": AfterHeadPhase,
         "inBody": InBodyPhase,
         "text": TextPhase,
